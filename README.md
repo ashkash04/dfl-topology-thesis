@@ -14,7 +14,7 @@ Ten Fashion-MNIST clients train local CNN models and exchange parameters only wi
 
 Neighbour aggregation uses a symmetric doubly-stochastic mixing matrix with Metropolis weights [3]. The training procedure follows the mixing-matrix idea of decentralized parallel stochastic gradient descent, although this implementation performs one local Adam epoch before each communication step and is therefore D-PSGD-inspired rather than an exact reproduction [2].
 
-Client heterogeneity is controlled using a Dirichlet concentration parameter \(\alpha\) [4]:
+Client heterogeneity is controlled using a Dirichlet concentration parameter $\alpha$ [4]:
 
 - `100.0`: approximately IID
 - `0.5`: moderately non-IID
