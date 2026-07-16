@@ -30,7 +30,7 @@ def local_train(model, dataset):
 
             optimizer.zero_grad()
             logits = local_model(images)
-            loss = loss_fn(logits, labels) 
+            loss = loss_fn(logits, labels)
             loss.backward()
             optimizer.step()
 

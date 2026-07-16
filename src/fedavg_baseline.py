@@ -1,4 +1,10 @@
-"""Centralized FedAvg baseline."""
+"""Centralized FedAvg baseline (single-run demo).
+
+Runs standard Federated Averaging (McMahan et al., 2017): clients train locally, a centralized server
+averages their weights into one global model each round. This is the centralized reference the decentralized
+topologies are compared against. The full experiment sweep is in run_experiments.py; this file is a standalone
+demonstration of the baseline.
+"""
 
 import copy
 import torch
