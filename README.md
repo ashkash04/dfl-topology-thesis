@@ -33,7 +33,7 @@ A matched, unweighted FedAvg baseline is also evaluated using the same model, Di
 - `src/topology.py` — graph construction, Metropolis weights, and spectral gap
 - `src/fedavg_baseline.py` — FedAvg aggregation and evaluation functions
 - `src/train_decentralized.py` — decentralized training and neighbour-mixing functions
-- `src/run_experiments.py` — full decentralized topology sweep
+- `src/run_decentralized.py` — full decentralized topology sweep
 - `src/run_fedavg.py` — matched FedAvg sweep
 - `results/decentralized_results.csv` — per-round decentralized results
 - `results/fedavg_results.csv` — per-round FedAvg results
@@ -44,7 +44,7 @@ A matched, unweighted FedAvg baseline is also evaluated using the same model, Di
 pip install -r requirements.txt
 cd src
 
-python run_experiments.py
+python run_decentralized.py
 python run_fedavg.py
 ```
 
