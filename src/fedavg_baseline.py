@@ -17,7 +17,7 @@ from client import local_train
 
 
 def average_weights(state_dicts):
-    """FedAvg aggregation: the element-wise mean of a list of state_dicts.
+    """unweighted FedAvg aggregation: the element-wise mean of a list of state_dicts.
     
     The unweighted mean assumes equal-sized client datasets, which the IID
     split guarantees; uneven splits would require weighting by sample count.
@@ -28,11 +28,47 @@ def average_weights(state_dicts):
         avg[key] = stacked.mean(dim=0)
     return avg
 
+def weighted_average_weights(client_weights, client_sizes):
+    """Average client model parameters in proportion to local dataset size."""
+    if len(client_weights) != len(client_sizes):
+        raise ValueError(
+            "client_weights and client_sizes must have the same length."
+        )
+
+    total_samples = sum(client_sizes)
+
+    if total_samples <= 0:
+        raise ValueError("Total number of client samples must be positive.")
+
+    averaged_weights = {}
+
+    for parameter_name in client_weights[0]:
+        first_tensor = client_weights[0][parameter_name]
+
+        # Neural-network parameters are floating-point tensors
+        if torch.is_floating_point(first_tensor):
+            weighted_parameter = torch.zeros_like(first_tensor)
+
+            for weights, client_size in zip(client_weights, client_sizes):
+                client_weight = client_size / total_samples
+
+                weighted_parameter.add_(
+                    weights[parameter_name],
+                    alpha=client_weight,
+                )
+
+            averaged_weights[parameter_name] = weighted_parameter
+
+        else:
+            # Included for state-dictionary entries that are not floating point
+            averaged_weights[parameter_name] = first_tensor.clone()
+
+    return averaged_weights
 
 def evaluate(model, test_set):
     """Return test accuracy of `model` on `test_set`."""
     model.eval()
-    loader = DataLoader(test_set, batch_size=256, shuffle=False)
+    loader = DataLoader(test_set, batch_size=config.EVAL_BATCH_SIZE, shuffle=False)
 
     correct = total = 0
     with torch.no_grad():

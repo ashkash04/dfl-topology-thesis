@@ -26,6 +26,25 @@ from fedavg_baseline import average_weights, evaluate
 from model import SmallCNN
 
 
+def load_completed_runs(path):
+    """Return already completed (alpha, seed) configurations."""
+    completed = set()
+
+    if not os.path.exists(path):
+        return completed
+    
+    with open(path, newline="") as file:
+        for row in csv.DictReader(file):
+            if int(row["round"]) == config.NUM_ROUNDS:
+                completed.add(
+                    (
+                        float(row["alpha"]),
+                        int(row["seed"]),
+                    )
+                )
+    
+    return completed
+
 def run_one(alpha, seed, train_set, test_set):
     """Run one FedAvg configuration and return its per-round results."""
     torch.manual_seed(seed)
@@ -52,21 +71,25 @@ def run_one(alpha, seed, train_set, test_set):
         global_weights = average_weights(client_weights)
         global_model.load_state_dict(global_weights)
 
-        accuracy = evaluate(global_model, test_set)
+        current_round = round_num + 1
 
-        rows.append(
-            {
+        if (
+            current_round % config.EVAL_EVERY == 0
+            or current_round == config.NUM_ROUNDS
+        ):
+            accuracy = evaluate(global_model, test_set)
+
+            rows.append({
                 "alpha": alpha,
                 "seed": seed,
-                "round": round_num + 1,
+                "round": current_round,
                 "accuracy": accuracy,
-            }
-        )
+            })
 
-        print(
-            f"Round {round_num + 1:3d}/{config.NUM_ROUNDS}  "
-            f"test accuracy: {accuracy:.4f}"
-        )
+            print(
+                f"Round {current_round:3d}/{config.NUM_ROUNDS}  "
+                f"test accuracy: {accuracy:.4f}"
+            )
     
     return rows
 
@@ -88,16 +111,29 @@ def main():
     total = len(config.ALPHA_VALUES) * len(config.SEEDS)
     done = 0
 
-    with open(out_path, "w", newline="") as file:
+    completed = load_completed_runs(out_path)
+    file_exists = os.path.exists(out_path)
+
+    with open(out_path, "a", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
+        
+        if not file_exists:
+            writer.writeheader()
 
         for alpha in config.ALPHA_VALUES:
             for seed in config.SEEDS:
-                done += 1
+                key = (float(alpha), int(seed))
 
+                if key in completed:
+                    print(
+                        f"Skipping completed run: "
+                        f"alpha={alpha}, seed={seed}"
+                    )
+                    continue
+
+                done += 1
                 print(
-                    f"\n[{done}/{total}]    "
+                    f"\n[{done}/{total}] "
                     f"FedAvg alpha={alpha} seed={seed}"
                 )
 
@@ -107,7 +143,6 @@ def main():
                     train_set,
                     test_set,
                 )
-
                 writer.writerows(rows)
                 file.flush()
     

@@ -32,6 +32,26 @@ from topology import make_topology, spectral_gap
 from train_decentralized import mix_weights, evaluate_client
 
 
+def load_completed_runs(path):
+    """Return already completed (topology, alpha, seed) configurations."""
+    completed = set()
+
+    if not os.path.exists(path):
+        return completed
+    
+    with open(path, newline="") as file:
+        for row in csv.DictReader(file):
+            if int(row["round"]) == config.NUM_ROUNDS:
+                completed.add(
+                    (
+                        row["topology"],
+                        float(row["alpha"]),
+                        int(row["seed"]),
+                    )
+                )
+    
+    return completed
+
 def run_one(topology_name, alpha, seed, train_set, test_set):
     """Run one configuration; return a list of per-round metric rows (dicts)."""
     torch.manual_seed(seed)
@@ -55,23 +75,33 @@ def run_one(topology_name, alpha, seed, train_set, test_set):
             local_train(client_models[i], client_datasets[i])
             for i in range(config.NUM_CLIENTS)
         ]
+
         mixed = mix_weights(client_weights, W)
+
         for i in range(config.NUM_CLIENTS):
             client_models[i].load_state_dict(mixed[i])
-        
-        accuracies = [
-            evaluate_client(client_models[i], test_set)
-            for i in range(config.NUM_CLIENTS)
-        ]
-        rows.append({
-            "topology": topology_name,
-            "alpha": alpha,
-            "seed": seed,
-            "spectral_gap": gap,
-            "round": round_num + 1,
-            "avg_acc": sum(accuracies) / len(accuracies),
-            "worst_acc": min(accuracies),
-        })
+
+        current_round = round_num + 1
+
+        # Evaluate only every five rounds and always on the final round
+        if (
+            current_round % config.EVAL_EVERY == 0
+            or current_round == config.NUM_ROUNDS
+        ):
+            accuracies = [
+                evaluate_client(client_models[i], test_set)
+                for i in range(config.NUM_CLIENTS)
+            ]
+
+            rows.append({
+                "topology": topology_name,
+                "alpha": alpha,
+                "seed": seed,
+                "spectral_gap": gap,
+                "round": current_round,
+                "avg_acc": sum(accuracies) / len(accuracies),
+                "worst_acc": min(accuracies),
+            })
     
     return rows
 
@@ -91,20 +121,42 @@ def main():
     total = len(config.TOPOLOGIES) * len(config.ALPHA_VALUES) * len(config.SEEDS)
     done = 0
 
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    completed = load_completed_runs(out_path)
+    file_exists = os.path.exists(out_path)
 
+    with open(out_path, "a", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+        
         for topology_name in config.TOPOLOGIES:
             for alpha in config.ALPHA_VALUES:
                 for seed in config.SEEDS:
+                    key = (topology_name, float(alpha), int(seed))
+
+                    if key in completed:
+                        print(
+                            f"Skipping completed run: "
+                            f"topology={topology_name}, alpha={alpha}, seed={seed}"
+                        )
+                        continue
+
                     done += 1
-                    print(f"[{done}/{total}] "
-                          f"topology={topology_name} alpha={alpha} seed={seed}")
-                    
-                    rows = run_one(topology_name, alpha, seed, train_set, test_set)
+                    print(
+                        f"[{done}/{total}] "
+                        f"topology={topology_name}, alpha={alpha}, seed={seed}"
+                    )
+
+                    rows = run_one(
+                        topology_name,
+                        alpha,
+                        seed,
+                        train_set,
+                        test_set,
+                    )
                     writer.writerows(rows)
-                    f.flush()
+                    file.flush()
     
     print(f"\nDone. Results written to {out_path}")
 

@@ -47,7 +47,7 @@ def mix_weights(client_state_dicts, W):
 def evaluate_client(model, test_set):
     """Return test accuracy of a single client's model on the shared test set."""
     model.eval()
-    loader = DataLoader(test_set, batch_size=256, shuffle=False)
+    loader = DataLoader(test_set, batch_size=config.EVAL_BATCH_SIZE, shuffle=False)
 
     correct = total = 0
     with torch.no_grad():
@@ -92,7 +92,7 @@ def run_decentralized(topology_name):
         ]
         avg_acc = sum(accuracies) / len(accuracies)
         worst_acc = min(accuracies)
-        print(f"Round {round_num + 1:3d}/{config.NUM_ROUNDS}    "
+        print(f"Round {round_num + 1:3d}/{config.NUM_ROUNDS} "
               f"avg: {avg_acc:.4f}  "
               f"worst: {worst_acc:.4f}")
 

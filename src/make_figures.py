@@ -1,7 +1,8 @@
 """Generate all figures from the completed experiment results.
 
-The script reads the two CSV files in ``results/`` and writes PNG and PDF
-versions of every figure to ``figures/``.
+The script reads the decentralized, unweighted FedAvg, and sample-weighted
+FedAvg CSV files in ``results/`` and writes PNG and PDF versions of every
+figure to ``figures/``.
 """
 
 from pathlib import Path
@@ -17,7 +18,15 @@ from topology import make_topology, spectral_gap
 
 
 TOPOLOGIES = ["line", "ring", "star", "hybrid", "mesh"]
-METHODS = ["line", "ring", "star", "hybrid", "mesh", "fedavg"]
+METHODS = [
+    "line",
+    "ring",
+    "star",
+    "hybrid",
+    "mesh",
+    "fedavg_unweighted",
+    "fedavg_weighted",
+]
 ALPHAS = [100.0, 0.5, 0.1]
 
 LABELS = {
@@ -26,7 +35,8 @@ LABELS = {
     "star": "Star",
     "hybrid": "Hybrid",
     "mesh": "Mesh",
-    "fedavg": "FedAvg",
+    "fedavg_unweighted": "FedAvg (equal-client)",
+    "fedavg_weighted": "FedAvg (sample-weighted)",
 }
 
 ALPHA_LABELS = {
@@ -63,15 +73,75 @@ def save_figure(figure, output_dir, filename):
     plt.close(figure)
 
 
+def read_results_csv(path, required_columns):
+    """Read one result CSV and verify that its required columns exist."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing result file: {path}\n"
+            "Run the corresponding experiment sweep before generating figures."
+        )
+
+    frame = pd.read_csv(path)
+    missing_columns = set(required_columns) - set(frame.columns)
+
+    if missing_columns:
+        raise ValueError(
+            f"{path.name} is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    return frame
+
+
+def keep_common_evaluation_rounds(frame):
+    """Keep only rounds evaluated by every current experiment script.
+
+    Earlier seeds may contain measurements for all 50 rounds, while later seeds
+    contain measurements every ``config.EVAL_EVERY`` rounds. Filtering here
+    prevents a convergence point from being averaged over a different number of
+    seeds than the other points.
+    """
+    if config.EVAL_EVERY <= 0:
+        raise ValueError("config.EVAL_EVERY must be a positive integer.")
+
+    rounds = frame["round"].astype(int)
+    mask = (
+        (rounds % config.EVAL_EVERY == 0)
+        | (rounds == config.NUM_ROUNDS)
+    )
+    return frame.loc[mask].copy()
+
+
 def load_results(repository_root):
-    """Load the decentralized and FedAvg result files."""
-    decentralized = pd.read_csv(
-        repository_root / "results" / "decentralized_results.csv"
+    """Load and align decentralized and both FedAvg result files."""
+    results_dir = repository_root / "results"
+
+    decentralized = read_results_csv(
+        results_dir / "decentralized_results.csv",
+        {
+            "topology",
+            "alpha",
+            "seed",
+            "spectral_gap",
+            "round",
+            "avg_acc",
+            "worst_acc",
+        },
     )
-    fedavg = pd.read_csv(
-        repository_root / "results" / "fedavg_results.csv"
+    fedavg_unweighted = read_results_csv(
+        results_dir / "fedavg_results.csv",
+        {"alpha", "seed", "round", "accuracy"},
     )
-    return decentralized, fedavg
+    fedavg_weighted = read_results_csv(
+        results_dir / "fedavg_weighted_results.csv",
+        {"alpha", "seed", "round", "accuracy"},
+    )
+
+    decentralized = keep_common_evaluation_rounds(decentralized)
+    fedavg_unweighted = keep_common_evaluation_rounds(fedavg_unweighted)
+    fedavg_weighted = keep_common_evaluation_rounds(fedavg_weighted)
+
+    return decentralized, fedavg_unweighted, fedavg_weighted
 
 
 def make_graph(topology_name, num_clients):
@@ -88,15 +158,18 @@ def make_graph(topology_name, num_clients):
         half = num_clients // 2
         graph = nx.Graph()
         graph.add_nodes_from(range(num_clients))
-        # First ring: nodes 0..half-1
+
+        # First ring: nodes 0..half-1.
         for i in range(half):
             ring_1 = (i + 1) % half
             graph.add_edge(i, ring_1)
-        # Second ring: nodes half..num_clients
+
+        # Second ring: nodes half..num_clients-1.
         for i in range(half, num_clients):
             ring_2 = half + ((i - half + 1) % (num_clients - half))
             graph.add_edge(i, ring_2)
-        # Bridge joining the two rings
+
+        # Bridge joining the two rings.
         graph.add_edge(0, half)
         return graph
 
@@ -238,7 +311,62 @@ def make_partition_figure(output_dir, repository_root):
     save_figure(figure, output_dir, "figure_2_dirichlet_partitions")
 
 
-def make_convergence_figure(decentralized, fedavg, output_dir):
+def summarize_fedavg(frame):
+    """Return per-alpha, per-round mean and standard deviation for FedAvg."""
+    return (
+        frame
+        .groupby(["alpha", "round"], as_index=False)
+        .agg(
+            mean_accuracy=("accuracy", "mean"),
+            std_accuracy=("accuracy", "std"),
+        )
+    )
+
+
+def plot_accuracy_curve(
+    axis,
+    summary,
+    alpha,
+    method_name,
+    method_colors,
+    linestyle,
+    linewidth,
+):
+    """Plot one summarized accuracy curve with a one-standard-deviation band."""
+    subset = summary[
+        summary["alpha"] == alpha
+    ].sort_values("round")
+
+    rounds = subset["round"].to_numpy()
+    mean_accuracy = 100.0 * subset["mean_accuracy"].to_numpy()
+    std_accuracy = (
+        100.0
+        * subset["std_accuracy"].fillna(0.0).to_numpy()
+    )
+
+    axis.plot(
+        rounds,
+        mean_accuracy,
+        label=LABELS[method_name],
+        color=method_colors[method_name],
+        linestyle=linestyle,
+        linewidth=linewidth,
+    )
+    axis.fill_between(
+        rounds,
+        mean_accuracy - std_accuracy,
+        mean_accuracy + std_accuracy,
+        color=method_colors[method_name],
+        alpha=0.10,
+    )
+
+
+def make_convergence_figure(
+    decentralized,
+    fedavg_unweighted,
+    fedavg_weighted,
+    output_dir,
+):
     """Plot mean accuracy over communication rounds for all methods."""
     decentralized_summary = (
         decentralized
@@ -249,14 +377,8 @@ def make_convergence_figure(decentralized, fedavg, output_dir):
         )
     )
 
-    fedavg_summary = (
-        fedavg
-        .groupby(["alpha", "round"], as_index=False)
-        .agg(
-            mean_accuracy=("accuracy", "mean"),
-            std_accuracy=("accuracy", "std"),
-        )
-    )
+    fedavg_unweighted_summary = summarize_fedavg(fedavg_unweighted)
+    fedavg_weighted_summary = summarize_fedavg(fedavg_weighted)
 
     default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     method_colors = {
@@ -267,7 +389,7 @@ def make_convergence_figure(decentralized, fedavg, output_dir):
     figure, axes = plt.subplots(
         1,
         len(ALPHAS),
-        figsize=(15, 4.5),
+        figsize=(16.5, 4.8),
         sharex=True,
         sharey=True,
         layout="constrained",
@@ -299,64 +421,74 @@ def make_convergence_figure(decentralized, fedavg, output_dir):
                 mean_accuracy - std_accuracy,
                 mean_accuracy + std_accuracy,
                 color=method_colors[topology_name],
-                alpha=0.12,
+                alpha=0.10,
             )
 
-        fedavg_subset = fedavg_summary[
-            fedavg_summary["alpha"] == alpha
-        ].sort_values("round")
-
-        rounds = fedavg_subset["round"].to_numpy()
-        mean_accuracy = 100.0 * fedavg_subset["mean_accuracy"].to_numpy()
-        std_accuracy = (
-            100.0
-            * fedavg_subset["std_accuracy"].fillna(0.0).to_numpy()
-        )
-
-        axis.plot(
-            rounds,
-            mean_accuracy,
-            label="FedAvg",
-            color=method_colors["fedavg"],
+        plot_accuracy_curve(
+            axis,
+            fedavg_unweighted_summary,
+            alpha,
+            "fedavg_unweighted",
+            method_colors,
             linestyle="--",
             linewidth=2.0,
         )
-        axis.fill_between(
-            rounds,
-            mean_accuracy - std_accuracy,
-            mean_accuracy + std_accuracy,
-            color=method_colors["fedavg"],
-            alpha=0.12,
+        plot_accuracy_curve(
+            axis,
+            fedavg_weighted_summary,
+            alpha,
+            "fedavg_weighted",
+            method_colors,
+            linestyle=":",
+            linewidth=2.2,
         )
 
         axis.set_title(ALPHA_LABELS[alpha])
         axis.set_xlabel("Communication round")
         axis.grid(alpha=0.25)
 
-    axes[0].set_ylabel("Mean shared-test accuracy (%)")
+    axes[0].set_ylabel("Mean test accuracy (%)")
     handles, labels = axes[-1].get_legend_handles_labels()
     figure.legend(
         handles,
         labels,
         loc="lower center",
-        ncol=6,
+        ncol=4,
         frameon=False,
-        bbox_to_anchor=(0.5, -0.05),
+        bbox_to_anchor=(0.5, -0.10),
     )
     figure.suptitle(
-        "Convergence across communication topologies and FedAvg",
+        "Convergence across communication topologies and FedAvg baselines",
         fontsize=14,
     )
     save_figure(figure, output_dir, "figure_3_convergence")
 
 
-def make_final_accuracy_figure(decentralized, fedavg, output_dir):
-    """Compare round-50 accuracy across methods and alpha values."""
+def final_fedavg_summary(frame, method_name):
+    """Summarize one FedAvg method at the configured final round."""
+    final_rows = frame[frame["round"] == config.NUM_ROUNDS]
+
+    summary = (
+        final_rows
+        .groupby("alpha", as_index=False)
+        .agg(
+            mean_accuracy=("accuracy", "mean"),
+            std_accuracy=("accuracy", "std"),
+        )
+    )
+    summary["method"] = method_name
+    return summary
+
+
+def make_final_accuracy_figure(
+    decentralized,
+    fedavg_unweighted,
+    fedavg_weighted,
+    output_dir,
+):
+    """Compare final-round accuracy across all methods and alpha values."""
     decentralized_final = decentralized[
-        decentralized["round"] == decentralized["round"].max()
-    ]
-    fedavg_final = fedavg[
-        fedavg["round"] == fedavg["round"].max()
+        decentralized["round"] == config.NUM_ROUNDS
     ]
 
     decentralized_summary = (
@@ -366,25 +498,29 @@ def make_final_accuracy_figure(decentralized, fedavg, output_dir):
             mean_accuracy=("avg_acc", "mean"),
             std_accuracy=("avg_acc", "std"),
         )
+        .rename(columns={"topology": "method"})
     )
 
-    fedavg_summary = (
-        fedavg_final
-        .groupby("alpha", as_index=False)
-        .agg(
-            mean_accuracy=("accuracy", "mean"),
-            std_accuracy=("accuracy", "std"),
-        )
+    fedavg_unweighted_summary = final_fedavg_summary(
+        fedavg_unweighted,
+        "fedavg_unweighted",
     )
-    fedavg_summary["topology"] = "fedavg"
+    fedavg_weighted_summary = final_fedavg_summary(
+        fedavg_weighted,
+        "fedavg_weighted",
+    )
 
     combined = pd.concat(
-        [decentralized_summary, fedavg_summary],
+        [
+            decentralized_summary,
+            fedavg_unweighted_summary,
+            fedavg_weighted_summary,
+        ],
         ignore_index=True,
     )
 
     figure, axis = plt.subplots(
-        figsize=(9, 5),
+        figsize=(10.5, 5.2),
         layout="constrained",
     )
 
@@ -394,7 +530,7 @@ def make_final_accuracy_figure(decentralized, fedavg, output_dir):
     for offset, alpha in zip(offsets, ALPHAS):
         subset = (
             combined[combined["alpha"] == alpha]
-            .set_index("topology")
+            .set_index("method")
             .reindex(METHODS)
         )
 
@@ -414,9 +550,11 @@ def make_final_accuracy_figure(decentralized, fedavg, output_dir):
     axis.set_xticks(
         x_positions,
         [LABELS[method] for method in METHODS],
+        rotation=15,
+        ha="right",
     )
     axis.set_xlabel("Method")
-    axis.set_ylabel("Final shared-test accuracy (%)")
+    axis.set_ylabel("Final test accuracy (%)")
     axis.set_title(
         "Final-round accuracy across methods and heterogeneity levels"
     )
@@ -429,7 +567,7 @@ def make_final_accuracy_figure(decentralized, fedavg, output_dir):
 def make_average_minimum_figure(decentralized, output_dir):
     """Compare average and minimum client-model accuracy at round 50."""
     final_round = decentralized[
-        decentralized["round"] == decentralized["round"].max()
+        decentralized["round"] == config.NUM_ROUNDS
     ]
 
     summary = (
@@ -473,6 +611,7 @@ def make_average_minimum_figure(decentralized, output_dir):
                 [minimum, average],
                 [y_position, y_position],
                 linewidth=2,
+                color="0.7",
             )
 
         axis.scatter(
@@ -491,7 +630,7 @@ def make_average_minimum_figure(decentralized, output_dir):
         )
 
         axis.set_title(ALPHA_LABELS[alpha])
-        axis.set_xlabel("Final shared-test accuracy (%)")
+        axis.set_xlabel("Final test accuracy (%)")
         axis.set_yticks(
             y_positions,
             [LABELS[name] for name in TOPOLOGIES],
@@ -522,7 +661,7 @@ def make_average_minimum_figure(decentralized, output_dir):
 def make_spectral_gap_figure(decentralized, output_dir):
     """Plot spectral gap against final mean accuracy."""
     final_round = decentralized[
-        decentralized["round"] == decentralized["round"].max()
+        decentralized["round"] == config.NUM_ROUNDS
     ]
 
     summary = (
@@ -585,7 +724,7 @@ def make_spectral_gap_figure(decentralized, output_dir):
         axis.set_xlabel("Spectral gap (log scale)")
         axis.grid(alpha=0.25)
 
-    axes[0].set_ylabel("Final mean shared-test accuracy (%)")
+    axes[0].set_ylabel("Final mean test accuracy (%)")
     figure.suptitle(
         "Spectral gap and accuracy levels",
         fontsize=14,
@@ -604,12 +743,26 @@ def main():
     output_dir = repository_root / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    decentralized, fedavg = load_results(repository_root)
+    (
+        decentralized,
+        fedavg_unweighted,
+        fedavg_weighted,
+    ) = load_results(repository_root)
 
     make_topology_figure(output_dir)
     make_partition_figure(output_dir, repository_root)
-    make_convergence_figure(decentralized, fedavg, output_dir)
-    make_final_accuracy_figure(decentralized, fedavg, output_dir)
+    make_convergence_figure(
+        decentralized,
+        fedavg_unweighted,
+        fedavg_weighted,
+        output_dir,
+    )
+    make_final_accuracy_figure(
+        decentralized,
+        fedavg_unweighted,
+        fedavg_weighted,
+        output_dir,
+    )
     make_average_minimum_figure(decentralized, output_dir)
     make_spectral_gap_figure(decentralized, output_dir)
 

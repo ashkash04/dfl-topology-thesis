@@ -14,7 +14,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # --- Federation setup ---
 NUM_CLIENTS = 10        # number of clients the data is partitioned across
 NUM_CLASSES = 10        # Fashion-MNIST has 10 classes
-SEED = 0                # default seed for single-run demo scripts
 
 # --- Local training (performed by each client every round) ---
 LOCAL_EPOCHS = 1        # passes over local data before communication round
@@ -37,4 +36,8 @@ ALPHA_VALUES = [100.0, 0.5, 0.1]
 
 # Multiple seeds so reported differences reflect signal, not initialisation
 # noise. Each (topology, alpha) configuration is run once per seed.
-SEEDS = [0, 1, 2]
+SEEDS = list(range(10)) # seeds 0 through 9
+
+# --- Evaluation ---
+EVAL_EVERY = 5          # evaluate all ten client models after every 5 rounds
+EVAL_BATCH_SIZE = 4096
